@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import itertools
 
-from app.services.chunker import build_chunks, count_tokens, split_text
+from app.services.chunker import build_chunks, count_tokens, split_page, split_text
 from app.services.parser import Page
 
 
@@ -49,3 +49,27 @@ def test_build_chunks_keeps_page_and_sequence() -> None:
     assert {c.page for c in chunks} == {1, 2}
     assert all(c.doc_id == "doc_test" for c in chunks)
     assert all(c.tokens > 0 for c in chunks)
+
+
+def test_split_page_respects_markdown_headings() -> None:
+    """有标题的文档按小节切，每块都带自己的标题，引用才能定位到具体条款。"""
+    text = (
+        "# 总则\n\n第一条：本制度自发布之日起执行。\n\n"
+        "## 二、报销\n\n财务复核通过后 5 个工作日内到账。\n\n"
+        "## 三、考勤\n\n实行弹性工作制。"
+    )
+    pieces = split_page(text, chunk_size=200, overlap=20)
+
+    assert len(pieces) == 3
+    assert pieces[0].startswith("# 总则")
+    assert pieces[1].startswith("## 二、报销")
+    assert "5 个工作日内到账" in pieces[1]
+    assert pieces[2].startswith("## 三、考勤")
+
+
+def test_split_page_without_headings_falls_back_to_length() -> None:
+    text = "没有标题的一段话。" * 80
+    pieces = split_page(text, chunk_size=120, overlap=20)
+
+    assert len(pieces) > 1
+    assert all(piece in text for piece in pieces)

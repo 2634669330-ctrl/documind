@@ -127,21 +127,45 @@ class LLMClient:
 
     # ------------------------------------------------------------------ mock
     async def _mock_stream(self, messages: Sequence[dict]) -> AsyncIterator[str]:
-        """本地假回答：从最后一条用户消息里取几个字，拼一段固定格式的回答。"""
-        question = ""
+        """离线演示模式：不调用模型，只展示「检索到的前两段原文」。
+
+        这样没有 API Key 也能演示检索是否准确；
+        输出会明确标注「未接入模型」，不会伪装成模型生成。
+        """
+        prompt = ""
         for msg in reversed(list(messages)):
             if msg.get("role") == "user":
-                question = msg.get("content", "")
+                prompt = msg.get("content", "")
                 break
 
-        snippet = re.sub(r"\s+", " ", question)[:40]
+        question = prompt
+        match = re.search(r"【问题】\s*(.+)", prompt, re.S)
+        if match:
+            question = match.group(1).strip()
+
+        context = ""
+        ctx_match = re.search(r"【参考片段】\s*(.*?)\s*【历史对话】", prompt, re.S)
+        if ctx_match:
+            context = ctx_match.group(1).strip()
+
+        # 只取前两段，每段截断，避免把整篇文档刷到屏幕上
+        blocks = [b for b in re.split(r"\n\n(?=\[\d+\])", context) if b.strip()][:1]
+        preview_lines = []
+        for block in blocks:
+            head, _, body = block.partition("\n")
+            body = re.sub(r"\s+", " ", body).strip()
+            if len(body) > 150:
+                body = body[:150] + "…"
+            preview_lines.append(f"{head.strip()}\n{body}")
+
         answer = (
-            "（mock 模式）我是 DocuMind 的本地模拟回答，未调用真实大模型。\n"
-            f"收到的问题大意是「{snippet}」。\n"
-            "配置 LLM_API_KEY 后即可得到基于文档的真实回答（来源 1）。"
+            "【离线演示模式】未配置 LLM_API_KEY，这里不调用大模型，只展示检索到的原文。\n\n"
+            f"你的问题：{question}\n\n"
+            + "\n\n".join(preview_lines)
+            + "\n\n（配置 Key 后，这里会变成模型基于上述片段的正式回答。）"
         )
         for char in answer:
-            await asyncio.sleep(0.004)
+            await asyncio.sleep(0.002)
             yield char
 
 

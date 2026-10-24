@@ -123,6 +123,9 @@ flowchart LR
 - 一个可用的模型 API Key（DeepSeek / OpenAI / 智谱皆可）
 - 内存 ≥ 4 GB（本地跑 BGE-m3 约需 2 GB）
 
+> **只想看演示？** 不用敲命令：Windows 下双击 启动后端.cmd + 启动界面.cmd 即可，
+> 完整的上台流程（含话术、故障排查）见 **[DEMO.md](DEMO.md)**。
+
 ### 2. 本地运行（5 分钟）
 
 ```bash
@@ -359,12 +362,16 @@ DocuMind/
 │   │   ├── parser.py         # PDF / DOCX / MD / TXT 解析与页码抽取
 │   │   └── chunker.py        # 语义分块（按标点吸附 + overlap）
 │   └── main.py               # FastAPI 入口：路由注册、CORS、健康检查、建表
+├── samples/                  # 演示用示例文档（虚构内容）
+├── scripts/
+│   └── demo.py               # 终端演示：上传 + 连问 6 题
 ├── frontend/
 │   └── app.py                # Streamlit 前端（上传 / 流式对话 / 引用卡片）
 ├── tests/
 │   ├── conftest.py           # 临时目录 + hash 向量 + mock 模型
 │   ├── test_api.py           # 上传 → 问答 → 历史 全链路
 │   ├── test_chunker.py
+│   ├── test_lc_chain.py      # LangChain 路径
 │   └── test_parser.py
 ├── data/                     # 上传文件、Chroma 持久化、chunks.jsonl（git 忽略）
 ├── Dockerfile                # 多阶段构建（builder + runtime）
