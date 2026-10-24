@@ -1,0 +1,9 @@
+# LangChain 编排路径（可选）
+# 安装：pip install -r requirements-langchain.txt
+# 启用：.env 里设置 USE_LANGCHAIN=true
+#
+# 只装 core + openai 适配器，不装完整 langchain 包（体积差 10 倍）：
+# 这条路径只用 ChatPromptTemplate + ChatOpenAI + StrOutputParser 三个组件。
+
+langchain-core==0.3.86
+langchain-openai==0.2.14

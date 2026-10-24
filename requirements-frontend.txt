@@ -1,0 +1,9 @@
+# 前端依赖（Streamlit 版）
+# 安装：pip install -r requirements-frontend.txt
+# 启动：streamlit run frontend/app.py
+#
+# 说明：前端只通过 HTTP 调后端，和后端不共享 Python 依赖，
+# 所以单独拆一个文件，避免把 Streamlit 装进 API 镜像。
+
+streamlit==1.66.1
+requests==2.34.2

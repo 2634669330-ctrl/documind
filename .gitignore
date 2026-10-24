@@ -33,6 +33,11 @@ models/
 *.bin
 *.safetensors
 
+# ---- 测试与工具缓存 ----
+.pytest-data/
+.pytest_cache/
+.ruff_cache/
+
 # ---- 日志与临时文件 ----
 logs/
 *.log

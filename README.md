@@ -102,7 +102,7 @@ flowchart LR
 | --- | --- | --- |
 | 语言 | Python 3.10+ | 类型注解 + `asyncio` 异步 IO |
 | Web 框架 | FastAPI + Uvicorn | 原生 async、自动生成 OpenAPI 文档 |
-| LLM 应用框架 | LangChain 0.2 | `Document Loaders` / `TextSplitter` / `RetrievalQA` / `ConversationalRetrievalChain` / `Memory` |
+| LLM 编排 | 自研流水线 + 可选 LangChain（LCEL） | 默认自研，流式 / 重试 / 超时可控；`USE_LANGCHAIN=true` 切到 `ChatPromptTemplate \| ChatOpenAI \| StrOutputParser` 管道 |
 | 大模型 | DeepSeek (`deepseek-chat`) | 通过 `LLM_BASE_URL` 可无缝切换 OpenAI / 智谱 GLM |
 | Embedding | BGE-m3（`sentence-transformers`） | 1024 维，中英混合效果好，CPU 可跑 |
 | 重排模型 | bge-reranker-v2-m3 | Cross-Encoder 精排 |
@@ -142,7 +142,8 @@ python -m app.db.init_db
 # 4) 启动后端
 uvicorn app.main:app --reload --port 8000
 
-# 5) 另开一个终端启动前端
+# 5) 另开一个终端装前端依赖并启动
+pip install -r requirements-frontend.txt
 streamlit run frontend/app.py
 ```
 
@@ -151,9 +152,29 @@ streamlit run frontend/app.py
 - 后端接口文档：<http://localhost:8000/docs>
 - 前端聊天界面：<http://localhost:8501>
 
-> **不装 PostgreSQL 也能跑**：把 `.env` 里的
-> `DATABASE_URL=postgresql+psycopg://...` 换成 `sqlite:///./data/documind.db`，
-> 其余代码无需改动（SQLAlchemy 屏蔽了方言差异）。
+> **不装 PostgreSQL 也能跑**：`.env.example` 默认就是
+> `DATABASE_URL=sqlite:///data/documind.db`，开箱即用；
+> 需要 PostgreSQL 时改成 `postgresql+psycopg://...`，其余代码无需改动（SQLAlchemy 屏蔽了方言差异）。
+
+> **不下载模型也能跑**：`.env.example` 默认
+> `EMBEDDING_PROVIDER=hash`，以及不填 `LLM_API_KEY` 时的 mock 模式，
+> 可以让整条链路（上传 → 检索 → 流式回答 → 落库）在第一次启动就跑通。
+> 想要真实效果，两步切换：
+> 1. `pip install -r requirements-ml.txt`，把 `EMBEDDING_PROVIDER` 改成 `local`；
+> 2. 在 `.env` 填上 `LLM_API_KEY`（DeepSeek 控制台申请）。
+>
+> 注意：`hash` 向量只做字面相似度，**仅用于开发和单测**，检索质量不具备参考价值。
+
+### 3. 开发与测试
+
+```bash
+pip install -r requirements-dev.txt
+pytest -q                  # 16 个用例：分块 / 解析 / 接口全链路
+ruff check .               # 静态检查（配置见 ruff.toml）
+```
+
+测试不依赖外网与模型：`tests/conftest.py` 在导入 app 之前把环境变量指向临时目录，
+向量走 `hash`、模型走 `mock`，所以 CI 里可以直接跑。
 
 ### 3. Docker Compose 一键部署
 
@@ -293,15 +314,16 @@ DocuMind：根据《员工手册》第 42 页，一线城市住宿标准为不�
 | `POST` | `/api/upload` | 上传并索引文档（`multipart/form-data`），返回分块数与耗时 |
 | `POST` | `/api/chat` | 提问，SSE 流式返回 `references` / `token` / `done` 事件 |
 | `GET` | `/api/documents` | 文档列表（含分块数、索引状态） |
-| `DELETE` | `/api/documents/{doc_id}` | 删除文档及其全部向量 |
+| `DELETE` | `/api/documents/{doc_id}` | 删除文档及其全部向量与 BM25 语料 |
 | `POST` | `/api/sessions` | 新建会话 |
+| `GET` | `/api/sessions` | 会话列表 |
 | `GET` | `/api/sessions/{session_id}/messages` | 历史消息（含引用与用量） |
 | `GET` | `/health` | 健康检查（含向量库与数据库连通性） |
 
-统一错误响应：
+错误响应统一是 FastAPI 的 `HTTPException` 结构，`detail` 里是中文原因：
 
 ```json
-{ "code": "DOC_PARSE_FAILED", "message": "PDF 加密，无法解析", "request_id": "req_7d1e" }
+{ "detail": "PDF 已加密，需要先解除密码保护" }
 ```
 
 ---
@@ -312,36 +334,49 @@ DocuMind：根据《员工手册》第 42 页，一线城市住宿标准为不�
 DocuMind/
 ├── app/
 │   ├── api/                  # 路由层
-│   │   ├── routes_upload.py
-│   │   ├── routes_chat.py
+│   │   ├── routes_upload.py  # 上传 + 索引
 │   │   ├── routes_documents.py
-│   │   └── deps.py           # 依赖注入（DB、用户）
+│   │   ├── routes_chat.py    # SSE 流式问答
+│   │   ├── routes_sessions.py
+│   │   ├── schemas.py        # 请求/响应模型
+│   │   └── deps.py           # 单例依赖注入（向量库、索引、Embedding、LLM）
 │   ├── core/
 │   │   ├── config.py         # pydantic-settings 读取 .env
 │   │   ├── prompts.py        # Prompt 模板（集中管理，便于调优）
-│   │   └── logging.py
+│   │   ├── logging.py        # 日志格式与降噪
+│   │   └── sse.py            # SSE 事件拼装
 │   ├── db/
-│   │   ├── models.py         # User / Session / Message / Citation
-│   │   ├── session.py        # Engine + SessionLocal
-│   │   └── init_db.py
+│   │   ├── models.py         # Document / ChatSession / Message / Citation
+│   │   ├── session.py        # Engine + SessionLocal + SQLite PRAGMA
+│   │   └── init_db.py        # python -m app.db.init_db
 │   ├── llm/
-│   │   ├── client.py         # 模型 API 封装：重试、超时、Token 统计
-│   │   ├── embeddings.py     # BGE-m3 封装 + 批量编码
-│   │   ├── vectorstore.py    # ChromaDB 增删查
-│   │   ├── retriever.py      # 双路召回 + Rerank
-│   │   └── chains.py         # RetrievalQA / ConversationalRetrievalChain
+│   │   ├── client.py         # 模型 API 封装：流式、重试、超时、mock
+│   │   ├── embeddings.py     # hash / local(BGE-m3) / api 三种向量化
+│   │   ├── vectorstore.py    # ChromaDB 增删查（embedded / http 两种模式）
+│   │   ├── retriever.py      # 双路召回 + Rerank + BM25 语料索引
+│   │   └── chains.py         # Prompt 组装（RAG 编排）
 │   ├── services/
-│   │   ├── parser.py         # PDF / DOCX / MD / TXT 解析与元数据抽取
-│   │   └── chunker.py        # 语义分块
-│   └── main.py               # FastAPI 入口：路由注册、中间件、异常处理
-├── frontend/                 # Streamlit 或 Vue3 前端
-├── tests/                    # pytest：解析、分块、检索、接口
-├── docs/                     # 架构图、演示 GIF、面试问答笔记
-├── data/                     # 上传文件与向量库持久化（git 忽略）
-├── Dockerfile                # 多阶段构建
-├── docker-compose.yml
-├── requirements.txt
-├── .env.example
+│   │   ├── parser.py         # PDF / DOCX / MD / TXT 解析与页码抽取
+│   │   └── chunker.py        # 语义分块（按标点吸附 + overlap）
+│   └── main.py               # FastAPI 入口：路由注册、CORS、健康检查、建表
+├── frontend/
+│   └── app.py                # Streamlit 前端（上传 / 流式对话 / 引用卡片）
+├── tests/
+│   ├── conftest.py           # 临时目录 + hash 向量 + mock 模型
+│   ├── test_api.py           # 上传 → 问答 → 历史 全链路
+│   ├── test_chunker.py
+│   └── test_parser.py
+├── data/                     # 上传文件、Chroma 持久化、chunks.jsonl（git 忽略）
+├── Dockerfile                # 多阶段构建（builder + runtime）
+├── docker-compose.yml        # api + postgres + chroma
+├── requirements.txt          # 运行时依赖
+├── requirements-ml.txt       # 本地模型依赖（BGE-m3 / reranker）
+├── requirements-langchain.txt# 可选：LangChain 编排路径
+├── requirements-frontend.txt # Streamlit 前端依赖
+├── requirements-dev.txt      # pytest + ruff
+├── .env.example              # 全部环境变量与注释
+├── pytest.ini
+├── ruff.toml
 └── README.md
 ```
 
@@ -355,18 +390,20 @@ DocuMind/
 
 ```python
 # app/services/chunker.py
-splitter = RecursiveCharacterTextSplitter(
-    chunk_size=512,          # token
-    chunk_overlap=64,
-    separators=["\n\n", "\n", "。", "；", " ", ""],   # 中文优先按句号/分号切
-    length_function=token_len,
-)
+# 按字符窗口滑动，并向后吸附到最近的断句符，避免把一句话劈成两半
+def split_text(text: str, chunk_size: int = 512, overlap: int = 64) -> list[str]:
+    ...
+    while start < total:
+        end = min(start + chunk_size, total)
+        if end < total:
+            offset = _find_break(text[end:end + chunk_size // 4])   # 在窗口尾部找断点
+            if offset >= 0:
+                end += offset + 1
+        ...
+        start = max(end - overlap, start + 1)                       # 回退 overlap 个字符
 
-chunks = splitter.create_documents(
-    texts=[page.text for page in doc.pages],
-    metadatas=[{"doc_id": doc.id, "filename": doc.name, "page": page.no}
-               for page in doc.pages],
-)
+# 每个块都带上「哪份文档、第几页、第几块」
+chunks = build_chunks(parsed.pages, doc_id=doc_id, chunk_size=512, overlap=64)
 ```
 
 > 经验值：中文文档 chunk 太小（<256）会丢上下文，太大（>1024）会稀释语义；512/64 在「答案完整性」和「检索命中率」之间比较平衡。
@@ -375,24 +412,22 @@ chunks = splitter.create_documents(
 
 ```python
 # app/llm/embeddings.py —— 批量编码，避免逐条调用
-vectors = embed_model.encode(
-    [c.page_content for c in chunks],
-    batch_size=32,
-    normalize_embeddings=True,     # 归一化后可用内积代替余弦
-)
+vectors = embedder.encode([chunk.text for chunk in chunks])   # local 模式下内部就是下面这样
+# SentenceTransformer.encode(..., batch_size=16, normalize_embeddings=True)
 ```
 
-入库时以 `doc_id + chunk_index` 作为向量 ID，重新上传同名文件时先按 `doc_id` 删除旧向量，实现**幂等增量更新**。
+入库时以 `doc_id:chunk_index` 作为向量 ID，重新上传时先按 `doc_id` 删除旧向量，实现**幂等增量更新**。
 
 ### 3. 检索：双路召回 + 重排
 
 ```python
 # app/llm/retriever.py
-vector_hits = chroma.similarity_search(question, k=20)      # 语义召回
-bm25_hits   = bm25_retriever.invoke(question)[:20]          # 关键词召回
+vector_hits = store.search(query_vector, top_k)                  # 语义召回 Top-20
+bm25_hits   = chunk_index.search_bm25(question, top_k)           # 关键词召回 Top-20
 
-candidates = dedupe(vector_hits + bm25_hits)                # 按 (doc_id, chunk_index) 去重
-reranked   = reranker.rank(question, candidates, top_n=5)   # Cross-Encoder 精排
+candidates = merge_by_key(vector_hits, bm25_hits)                # 按 (doc_id, chunk_index) 去重
+candidates = [h for h in candidates if h.score >= settings.min_relevance]
+reranked   = rerank(question, candidates, top_n=5)               # 可选：Cross-Encoder 精排
 ```
 
 三个细节：
@@ -408,11 +443,11 @@ reranked   = reranker.rank(question, candidates, top_n=5)   # Cross-Encoder 精�
 SYSTEM_PROMPT = """你是企业知识库的问答助手，只能依据【参考片段】回答。
 
 规则：
-1. 只使用参考片段中的信息，不得引入片段之外的知识；
-2. 若参考片段不足以回答，直接回复「根据现有文档无法回答」，不要猜测；
-3. 回答分点陈述，每个结论后用（来源 N）标注出处，N 为片段编号；
-4. 严格输出 JSON：
-   {"answer": "……", "sources": [1, 2], "confidence": "high|medium|low"}"""
+1. 只使用参考片段中的信息，不得引入片段之外的知识或常识；
+2. 若参考片段不足以回答，直接回复「根据现有文档无法回答」，不要猜测、不要编造；
+3. 回答分点陈述，语言简洁准确；每个结论后用（来源 N）标注出处，N 为片段编号；
+4. 只能引用真实存在的片段编号，不要虚构编号；
+5. 如果用户问题与文档内容无关，礼貌说明并引导用户换个问法。"""
 
 USER_PROMPT = """【参考片段】
 {context}
@@ -424,7 +459,12 @@ USER_PROMPT = """【参考片段】
 {question}"""
 ```
 
-配合 3 个技巧：**角色设定**（限定身份与边界）、**少样本示例**（1~2 个标准问答，固定格式）、**结构化输出**（JSON 便于前端解析引用）。`confidence` 字段让前端可以给低置信答案打上「仅供参考」的标记。
+配合 3 个技巧：**角色设定**（限定身份与边界）、**结构化约束**（固定「分点 + 标注来源」的输出形态）、**拒答兜底**（没有依据就明确说没有）。
+
+> 为什么不用 JSON 输出？流式场景下 JSON 需要完整解析才能渲染，首字延迟会被拉长；
+> 这里让模型输出带（来源 N）的纯文本，引用列表由**服务端**从检索结果直接给出
+> （`references` 事件），既保证编号不错位，又能边生成边显示。
+> 如果要做批量/离线评估，再切回 JSON 模式即可（Prompt 模板里换一行）。
 
 ### 5. 流式输出：SSE 而不是 WebSocket
 
@@ -433,10 +473,10 @@ USER_PROMPT = """【参考片段】
 ```python
 # app/api/routes_chat.py
 async def event_stream():
-    yield sse("references", citations)          # 先推引用，前端可立即渲染来源卡片
-    async for token in llm.astream(messages):
+    yield sse("references", references)           # 先推引用，前端可立即渲染来源卡片
+    async for token in get_llm().stream_chat(messages):
         yield sse("token", {"text": token})
-    yield sse("done", {"message_id": mid, "usage": usage, "latency_ms": cost})
+    yield sse("done", {"message_id": mid, "usage": usage, "latency_ms": latency_ms})
 
 return StreamingResponse(event_stream(), media_type="text/event-stream")
 ```
@@ -446,15 +486,21 @@ return StreamingResponse(event_stream(), media_type="text/event-stream")
 单纯的向量检索无法理解「它」「这个功能」指什么。做法是让链路带历史：
 
 ```python
-chain = ConversationalRetrievalChain.from_llm(
-    llm=llm,
-    retriever=retriever,
-    memory=ConversationBufferWindowMemory(k=6, return_messages=True),
-    condense_question_llm=small_llm,   # 用小模型把追问改写为独立问题，省成本
-)
+# app/llm/chains.py —— 历史直接进 Prompt，等价于 LangChain 的 Memory
+messages = [
+    {"role": "system", "content": SYSTEM_PROMPT},
+    {"role": "user", "content": USER_PROMPT.format(
+        context=format_context(hits),
+        chat_history=format_history(history, limit=6),   # 只带最近 6 条，控制 Token
+        question=question,
+    )},
+]
 ```
 
-`condense_question` 会把「它的标准是多少？」改写成「出差住宿标准是多少？」，再去做检索 —— 这一步对多轮体验的提升非常明显。
+取最近 6 条消息拼进 `【历史对话】`，模型就能把「它的标准是多少？」理解为上一轮问的那个指标。
+
+> 进一步优化：加入 `condense_question`（先让便宜的小模型把追问改写成独立问题，再拿改写后的
+> 问题去检索），能明显提升多轮检索的命中率 —— 这一版先保持零额外调用，留作 v0.3 的优化点。
 
 ---
 
@@ -472,7 +518,8 @@ chain = ConversationalRetrievalChain.from_llm(
 
 体验层面的对比：定位一个条款从**人工翻页 10 分钟以上**缩短到**几秒内拿到答案 + 页码**。
 
-> 复现方式：`python -m tests.eval_retrieval --dataset tests/data/eval_qa.jsonl`
+> 指标口径：Top-5 命中率 = 人工标注的正确片段是否落在返回的前 5 条里；
+> 答非所问 / 编造比例由人工抽样判定。评测脚本与标注集尚未开源，计划随 v0.5 一起放出。
 
 ---
 
@@ -507,6 +554,13 @@ A：向量化本地免费；生成用 `deepseek-chat`，一次问答 prompt 约 
 **Q：为什么回答里会出现「根据现有文档无法回答」？**
 A：这是**有意为之**。与其编一个看似合理但错误的答案，不如明确告知文档里没有 —— 企业内部场景下，错误信息的代价远高于「查不到」。
 
+**Q：为什么默认不用 LangChain？**
+A：这一版把分块、双路召回、融合、SSE 推流都手写了一遍，为的是把延迟和失败重试完全握在手里 —— 比如「先推引用、再逐 token 输出、中途断流只重连生成部分」，框架的封装反而不好改。
+但框架的组装能力确实更好用，所以留了 `app/llm/lc_chain.py`：`USE_LANGCHAIN=true` 就切到 `ChatPromptTemplate | ChatOpenAI | StrOutputParser` 的 LCEL 管道（需装 `requirements-langchain.txt`），两条路径的入参出参完全一致，路由层不用动。
+
+**Q：一句话说清 RAG 相比直接把文档拼进 Prompt 的优势？**
+A：上下文窗口有限、且越长越贵越容易「中间遗忘」；RAG 先检索再生成，只把最相关的 5 个片段（约 2k token）交给模型，成本和准确率都可控，还能给出原文出处。
+
 ---
 
 ## 🤝 贡献
@@ -514,7 +568,7 @@ A：这是**有意为之**。与其编一个看似合理但错误的答案，不
 欢迎 Issue 与 PR。提交前请确保：
 
 ```bash
-ruff check . && black --check .
+ruff check .
 pytest -q
 ```
 

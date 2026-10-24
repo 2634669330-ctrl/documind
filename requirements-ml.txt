@@ -1,0 +1,8 @@
+# 本地深度学习依赖：只有 EMBEDDING_PROVIDER=local 或 ENABLE_RERANK=true 才需要
+#
+# 安装：pip install -r requirements-ml.txt
+# 体积提示：torch 会拉 2GB 左右，CPU 机器第一次加载 BGE-m3 约需 2GB 内存。
+# 国内网络慢可以加镜像：
+#   pip install -r requirements-ml.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+sentence-transformers>=3.0

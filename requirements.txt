@@ -1,0 +1,22 @@
+# DocuMind 运行时依赖（版本为实测通过的组合，2026-10）
+# 安装：pip install -r requirements.txt
+#
+# 说明：
+# - chromadb 自带嵌入式模式，不需要单独起服务；用 docker-compose 里的 chroma 服务时，
+#   镜像版本要与这里的 chromadb 版本保持一致（当前 1.5.9）；
+# - psycopg 只在用 PostgreSQL 时需要（SQLite 场景装了也不影响）；
+# - 本地 Embedding / Rerank 模型见 requirements-ml.txt（体积大，按需安装）。
+
+fastapi==0.162.0
+uvicorn[standard]==0.54.0
+pydantic==2.14.1
+pydantic-settings==2.16.1
+python-multipart==0.0.32
+httpx==0.28.1
+sqlalchemy==2.0.55
+pypdf==6.21.2
+python-docx==1.2.0
+chromadb==1.5.9
+rank-bm25==0.2.2
+jieba==0.42.1
+psycopg[binary]==3.3.6

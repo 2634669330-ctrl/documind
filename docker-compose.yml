@@ -1,0 +1,71 @@
+# 一键编排：API + PostgreSQL + Chroma 向量库
+#   准备：cp .env.example .env   （至少确认 LLM_API_KEY，留空会跑 mock 模式）
+#   启动：docker compose up -d
+#   日志：docker compose logs -f api
+#   停止：docker compose down          （加 -v 会连数据卷一起删）
+#
+# 第一次启动会自动建表；.env 里的 DATABASE_URL / CHROMA_* 会被下面的 environment 覆盖，
+# 指向容器内的服务名，避免连到宿主机。
+
+name: documind
+
+services:
+  api:
+    build:
+      context: .
+      target: runtime
+    image: documind:0.2.0
+    container_name: documind-api
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      APP_ENV: prod
+      DATABASE_URL: postgresql+psycopg://documind:documind@postgres:5432/documind
+      CHROMA_MODE: http
+      CHROMA_HOST: chroma
+      CHROMA_PORT: "8000"
+      DATA_DIR: /app/data
+      CHROMA_COLLECTION: documind_chunks
+    depends_on:
+      postgres:
+        condition: service_healthy
+      chroma:
+        condition: service_started
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: documind-postgres
+    environment:
+      POSTGRES_USER: documind
+      POSTGRES_PASSWORD: documind
+      POSTGRES_DB: documind
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U documind -d documind"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  chroma:
+    image: chromadb/chroma:1.5.9   # 版本要和 requirements.txt 里的 chromadb 保持一致
+    container_name: documind-chroma
+    ports:
+      - "8001:8000"
+    environment:
+      IS_PERSISTENT: "TRUE"
+      ANONYMIZED_TELEMETRY: "FALSE"
+    volumes:
+      - chromadata:/chroma/chroma
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  chromadata:
