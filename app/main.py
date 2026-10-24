@@ -74,11 +74,13 @@ def create_app() -> FastAPI:
 
         store_ok = get_vector_store().healthy()
         stats = get_chunk_index().stats()
+        # mock = 没配 Key，或显式打开了 MOCK_LLM（后者用于离线演练，避免误烧额度）
+        llm_mock = settings.mock_llm or not settings.llm_api_key
         return HealthOut(
             status="ok" if (db_ok and store_ok) else "degraded",
             database=db_ok,
             vector_store=store_ok,
-            llm_mock=not bool(settings.llm_api_key),
+            llm_mock=llm_mock,
             embedding_provider=settings.embedding_provider,
             chunks=stats["chunks"],
         )
