@@ -169,7 +169,7 @@ streamlit run frontend/app.py
 
 ```bash
 pip install -r requirements-dev.txt
-pytest -q                  # 16 个用例：分块 / 解析 / 接口全链路
+pytest -q                  # 18 个用例：分块 / 解析 / 接口全链路 / LangChain 路径
 ruff check .               # 静态检查（配置见 ruff.toml）
 ```
 
