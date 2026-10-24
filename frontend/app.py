@@ -1,7 +1,7 @@
 """Streamlit 前端：上传文档 + 流式对话 + 引用溯源。
 
 启动：streamlit run frontend/app.py
-后端：默认 http://localhost:8000，可用环境变量 DOCUMIND_API 覆盖
+后端：默认 http://127.0.0.1:8000，可用环境变量 DOCUMIND_API 覆盖
 """
 
 from __future__ import annotations
@@ -12,7 +12,13 @@ import os
 import requests
 import streamlit as st
 
-API = os.getenv("DOCUMIND_API", "http://localhost:8000").rstrip("/")
+API = os.getenv("DOCUMIND_API", "http://127.0.0.1:8000").rstrip("/")
+
+# 关键：关闭 requests 对系统代理的自动探测。
+# 本机开着 VPN / 代理软件时，Windows 会把 127.0.0.1:8000 也转发给代理，
+# 结果界面请求后端直接 502，演示当场翻车。
+SESSION = requests.Session()
+SESSION.trust_env = False
 
 st.set_page_config(page_title="DocuMind", page_icon="📄", layout="wide")
 
@@ -21,7 +27,7 @@ st.set_page_config(page_title="DocuMind", page_icon="📄", layout="wide")
 def stream_chat(question: str, session_id: str | None):
     """逐事件读取后端 SSE：references 先到，token 持续追加，done 收尾。"""
     payload = {"question": question, "session_id": session_id}
-    with requests.post(f"{API}/api/chat", json=payload, stream=True, timeout=120) as resp:
+    with SESSION.post(f"{API}/api/chat", json=payload, stream=True, timeout=180) as resp:
         resp.raise_for_status()
         event, data = None, None
         for raw in resp.iter_lines(decode_unicode=True):
@@ -49,7 +55,7 @@ with st.sidebar:
     if uploaded is not None and st.button("索引该文档", use_container_width=True):
         with st.spinner("解析、切分、向量化中…"):
             files = {"file": (uploaded.name, uploaded.getvalue())}
-            res = requests.post(f"{API}/api/upload", files=files, timeout=600)
+            res = SESSION.post(f"{API}/api/upload", files=files, timeout=600)
         if res.ok:
             info = res.json()
             st.success(f"已索引 {info['filename']}：{info['chunks']} 块，{info['elapsed_ms']}ms")
@@ -58,7 +64,7 @@ with st.sidebar:
 
     st.divider()
     try:
-        docs = requests.get(f"{API}/api/documents", timeout=10).json()
+        docs = SESSION.get(f"{API}/api/documents", timeout=10).json()
     except Exception:
         docs = {"total": 0, "items": []}
 
@@ -67,7 +73,7 @@ with st.sidebar:
         col1, col2 = st.columns([4, 1])
         col1.write(f"**{item['filename']}**  \n{item['chunks']} 块 · {item['status']}")
         if col2.button("🗑", key=f"del_{item['id']}"):
-            requests.delete(f"{API}/api/documents/{item['id']}", timeout=30)
+            SESSION.delete(f"{API}/api/documents/{item['id']}", timeout=30)
             st.rerun()
 
     st.divider()
@@ -89,7 +95,7 @@ for msg in st.session_state.history:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
         for cite in msg.get("citations", []):
-            st.caption(f"▸ 来源 {cite['no']}　{cite['doc']} · 第 {cite['page']} 页 · 相似度 {cite['score']}")
+            st.caption(f"▸ 来源 {cite['no']}　{cite['doc']} · 第 {cite['page']} 页")
 
 question = st.chat_input("问点什么，比如：出差住宿标准是多少？")
 if question:
@@ -116,7 +122,7 @@ if question:
         placeholder.markdown(answer)
 
         for cite in citations:
-            st.caption(f"▸ 来源 {cite['no']}　{cite['doc']} · 第 {cite['page']} 页 · 相似度 {cite['score']}")
+            st.caption(f"▸ 来源 {cite['no']}　{cite['doc']} · 第 {cite['page']} 页")
             with st.expander(f"查看来源 {cite['no']} 片段"):
                 st.write(cite["snippet"])
 
